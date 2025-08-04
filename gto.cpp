@@ -1,3 +1,4 @@
+// compile with g++ -std=c++17 -O2 -Wall gto.cpp -o gto
 // map gamestates to Action probabilites
 // players start with random maps
     // in genetic algo:
@@ -23,7 +24,13 @@
 #include <chrono>
 
 using namespace std;
-auto rng = std::default_random_engine{ static_cast<unsigned>(chrono::system_clock::now().time_since_epoch().count()) };
+random_device rd;  // non-deterministic seed
+mt19937 rng(rd()); // Mersenne Twister engine
+uniform_real_distribution<float> get_0to1(0.0f, 1.0f);
+uniform_real_distribution<int> get_0to51(0, 51);
+uniform_real_distribution<float> get_small(-0.05f, 0.05f);
+
+
 const int NUM_PLAYERS = 4;
 
 enum Suit { HEARTS, DIAMONDS, CLUBS, SPADES };
@@ -246,9 +253,25 @@ void normalize_probability(vector<float> &probabilities) {
 
 vector<float> random_probabilities(Gamestate g) {
     if (g.pre_raises >= 4 || g.post_raises >= 4) return {(float) 1/2, (float) 1/2};
-    vector<float> probabilities = {float (rand() % 100) / 100, float (rand() % 100) / 100, float (rand() % 100) / 100, float (rand() % 100) / 100, float (rand() % 100) / 100, float (rand() % 100) / 100};
+    vector<float> probabilities = {get_0to1(rng), get_0to1(rng), get_0to1(rng), get_0to1(rng), get_0to1(rng), get_0to1(rng)};
     normalize_probability(probabilities);
     return probabilities;
+}
+
+void mutate_probabilities(vector<float> &probabilities) {
+    for (float & prob: probabilities) {
+        prob += get_small(rng);
+    }
+    normalize_probability(probabilities);
+}
+
+map<Gamestate, vector<float>> get_modified_strategy(map<Gamestate, vector<float>> &strategy) {
+    map<Gamestate, vector<float>> new_strategy;
+    for (auto [gamestate, probabilities]: strategy) {
+        mutate_probabilities(probabilities);
+        new_strategy[gamestate] = probabilities;
+    }
+    return new_strategy;
 }
 
 class Player {
@@ -262,17 +285,19 @@ class Player {
         Gamestate gamestate;
 
         int total_profit;
+        bool mutate;
 
         Action decideAction () {
             if (strategy.find(gamestate) == strategy.end()) strategy[gamestate] = random_probabilities(gamestate);
+            if (mutate) mutate_probabilities(strategy[gamestate]);
 
-            float rng = float (rand() % 100) / 100;
+            float rand_num = get_0to1(rng);
             float cumulative = 0;
             for (int i = 0; i < strategy[gamestate].size(); ++i) {
                 float probability = strategy[gamestate][i];
                 Action action = static_cast<Action>(i);
                 cumulative += probability;
-                if (rng < cumulative) {
+                if (rand_num < cumulative) {
                     return action;
                 }
             }
@@ -324,15 +349,15 @@ void bucket_hands() {
 
 
 tuple<Equity, Equity, Equity, Equity> get_equities(vector<Card> &hole_cards, vector<Card> &community_cards) {
-    auto calculate_equity = [&](vector<Card> &hero, vector<Card> &villain, vector<Card> &community_cards) {
+    auto calculate_equity = [&](vector<Card> &hero, vector<Card> &villain, vector<Card> &community_cards, set<Card> &cards_in_play) {
         int score = 0;
         int total = 20;
         for (int i = 0; i < 10; ++i) {
             vector<Card> community = community_cards;
             while (community.size() < 5) {
-                int rng = rand() % 52;
-                Card draw = {(rng / 4), static_cast<Suit>(rng % 4)};
-                if (find(hero.begin(), hero.end(), draw) != hero.end() || find(villain.begin(), villain.end(), draw) != villain.end() || find(community.begin(), community.end(), draw) != community.end()) {
+                int rand_card = get_0to51(rng);
+                Card draw = {(rand_card / 4), static_cast<Suit>(rand_card % 4)};
+                if (cards_in_play.count(draw)) {
                     continue;
                 }
                 community.push_back(draw);
@@ -367,7 +392,7 @@ tuple<Equity, Equity, Equity, Equity> get_equities(vector<Card> &hole_cards, vec
         if (set.count(c1) || set.count(c2)) continue;
         samples++;
         vector<Card> villain = {c1, c2};
-        equity += calculate_equity(hole_cards, villain, community_cards);
+        equity += calculate_equity(hole_cards, villain, community_cards, set);
     }
     equity /= samples;
     Equity monster = static_cast<Equity> (int (equity / 0.2));
@@ -379,7 +404,7 @@ tuple<Equity, Equity, Equity, Equity> get_equities(vector<Card> &hole_cards, vec
         if (set.count(c1) || set.count(c2)) continue;
         samples++;
         vector<Card> villain = {c1, c2};
-        equity += calculate_equity(hole_cards, villain, community_cards);
+        equity += calculate_equity(hole_cards, villain, community_cards, set);
     }
     equity /= samples;
     Equity strong = static_cast<Equity> (int (equity / 0.2));
@@ -391,7 +416,7 @@ tuple<Equity, Equity, Equity, Equity> get_equities(vector<Card> &hole_cards, vec
         if (set.count(c1) || set.count(c2)) continue;
         samples++;
         vector<Card> villain = {c1, c2};
-        equity += calculate_equity(hole_cards, villain, community_cards);
+        equity += calculate_equity(hole_cards, villain, community_cards, set);
     }
     equity /= samples;
     Equity medium = static_cast<Equity> (int (equity / 0.2));
@@ -403,7 +428,7 @@ tuple<Equity, Equity, Equity, Equity> get_equities(vector<Card> &hole_cards, vec
         if (set.count(c1) || set.count(c2)) continue;
         samples++;
         vector<Card> villain = {c1, c2};
-        equity += calculate_equity(hole_cards, villain, community_cards);
+        equity += calculate_equity(hole_cards, villain, community_cards, set);
     }
     equity /= samples;
     Equity weak = static_cast<Equity> (int (equity / 0.2));
@@ -552,25 +577,6 @@ void showdown(vector<Player> &players, vector<Card> &community, int &pot, Deck &
     deck.cards.push_back(community.back()); community.pop_back();
 
     pot = 0;
-}
-
-map<Gamestate, vector<float>> get_modified_strategy(map<Gamestate, vector<float>> &strategy) {
-    map<Gamestate, vector<float>> new_strategy;
-    for (auto [gamestate, probabilities]: strategy) {
-
-        if (gamestate.pre_raises >= 4 || gamestate.post_raises >= 4) {
-            new_strategy[gamestate] = {(float) 1/2, (float) 1/2};
-        }
-        else {
-            for (float & prob: probabilities) {
-                prob += (float) (rand() % 11) / 100 - 0.05;
-            }
-            normalize_probability(probabilities);
-
-            new_strategy[gamestate] = probabilities;
-        }
-    }
-    return new_strategy;
 }
 
 void save_strategy_to_file(const map<Gamestate, vector<float>>& strategy, const string& filename) {
@@ -737,8 +743,10 @@ int main() {
         if (gen % 5 == 4) save_strategy_to_file(players[0].strategy, filename);
         cout << gen << '\n';
 
-        players[3].strategy = get_modified_strategy(players[0].strategy);
-        players[2].strategy = get_modified_strategy(players[1].strategy);
+        players[3].mutate = true;
+        players[2].mutate = true;
+        players[1].mutate = true;
+        players[0].mutate = false;
         for (Player &p: players) {
             p.total_profit = 0;
         }
