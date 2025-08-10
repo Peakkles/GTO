@@ -56,7 +56,8 @@ struct Player {
     GameState calc_gamestate() { return GameState{ false };}
 };
 
-struct Game {
+class Game {
+public:
     Player players[NUM_PLAYERS];
     Card deck[52];
     int top_card_index;
@@ -74,7 +75,9 @@ struct Game {
     bool all_folded();
     void run_game();
 
-private:
+    int evaluate_7cards(int player);
+    float showdown(float probability);
+
     float dfs(float p, int last_aggressor, int player_turn);
 };
 
