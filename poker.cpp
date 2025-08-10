@@ -120,7 +120,12 @@ float Game::dfs(float probability, int last_aggressor, int player_turn) {
             curr_player.chips += bet;
         }
     }
+    
 
+    for (int i = 0; i < undo_community_cards; ++i) {
+        community_cards.pop_back();
+        top_card_index++;
+    }
     return total_ev;
 }
 
