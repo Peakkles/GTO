@@ -3,6 +3,8 @@
 
 #include <map>
 #include <vector>
+#include <string>
+
 
 #define NUM_PLAYERS 4
 #define INITIAL_CHIPS 200
@@ -25,7 +27,35 @@ struct Card {
 };
 
 struct GameState {
-    bool is_hand_good;
+    int rank_combos_that_beat_you; // 0 to (14 choose 2 - 1)
+    int flush_highs_that_beat_you; // 0 to 10
+    int straight_draws; // 0,1,or 2 -> same as 0,4,or 8 outs
+    bool flush_draw;
+    int preflop_raises; // 0-3
+    int post_raises; // 0-2
+
+    /* if preflop, rank_combos is used for high card 2-14
+       flush_highs is used for low card 2-14
+       straight_draw set to -1
+       flush_draw = hole_cards are suited */ 
+
+    GameState(int r_combos, int flushes, int s_draws, bool f_draw, int pre_r, int post_r) 
+    : rank_combos_that_beat_you(r_combos), flush_highs_that_beat_you(flushes)
+    , straight_draws(s_draws), flush_draw(f_draw), preflop_raises(pre_r), post_raises(post_r) {}
+
+    GameState(int high_card, int low_card, bool suited, int pre_r) 
+    : rank_combos_that_beat_you(high_card), flush_highs_that_beat_you(low_card)
+    , straight_draws(-1), flush_draw(suited) , preflop_raises(pre_r), post_raises(0) {}
+
+    bool operator< (const GameState &other) const {
+        if (rank_combos_that_beat_you != other.rank_combos_that_beat_you) return rank_combos_that_beat_you < other.rank_combos_that_beat_you;
+        if (flush_highs_that_beat_you != other.flush_highs_that_beat_you) return flush_highs_that_beat_you < other.flush_highs_that_beat_you;
+        if (straight_draws != other.straight_draws) return straight_draws < other.straight_draws;
+        if (flush_draw != other.flush_draw) return flush_draw < other.flush_draw;
+        if (preflop_raises != other.preflop_raises) return preflop_raises < other.preflop_raises;
+        if (post_raises != other.post_raises) return post_raises < other.post_raises;
+        return false;
+    }
 };
 
 enum Action {
@@ -53,7 +83,6 @@ struct Player {
         );
     }
 
-    GameState calc_gamestate() { return GameState{ false };}
 };
 
 class Game {
@@ -66,6 +95,8 @@ public:
     int small_blind;
     int current_bet;
     int pot;
+    int pre_raises;
+    int post_raises;
 
     int main_character;
 
@@ -74,8 +105,8 @@ public:
     Card draw();
     bool all_folded();
     void run_game();
-
-    int evaluate_7cards(int player);
+    GameState calc_gamestate(int player);
+    int evaluate_cards(int player);
     float showdown(float probability);
 
     float dfs(float p, int last_aggressor, int player_turn);

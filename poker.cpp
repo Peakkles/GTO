@@ -34,6 +34,7 @@ void Game::run_game() {
 
     players[0].chips -= small_blind;
     players[1].chips -= small_blind * 2;
+    dfs(1.0f, -1, 2);
 
 }
 
@@ -44,13 +45,13 @@ bool Game::all_folded() {
     }
     return active_players == 1;
 }
-int Game::evaluate_7cards(int player) {
+int Game::evaluate_cards(int player) {
     Player &p = players[player];
-    Card cards[7];
-    cards[0] = p.hole_cards[0]; 
-    cards[1] = p.hole_cards[1];
-    assert(community_cards.size() == 5);
-    for (int i = 0; i < 5; ++i) cards[i+2] = community_cards[i];
+    std::vector<Card> cards;
+    cards.push_back(p.hole_cards[0]);
+    cards.push_back(p.hole_cards[1]);
+    assert(community_cards.size() >= 3);
+    for (Card &c: community_cards) cards.push_back(c);
 
     int rank_count[15] = {}; // 2-14, 0 and 1 not used
     int suit_count[4] = {};
@@ -61,7 +62,7 @@ int Game::evaluate_7cards(int player) {
     }
 
     // Sort cards by rank descending
-    std::sort(cards, cards+7, [](const Card& a, const Card& b) {
+    std::sort(cards.begin(), cards.end(), [](const Card& a, const Card& b) {
         return a.rank > b.rank;
     });
 
@@ -94,7 +95,7 @@ int Game::evaluate_7cards(int player) {
         }
     }
     std::sort(freq_val_pairs.begin(), freq_val_pairs.end(), [](const auto & a, const auto & b){
-        if (a.first != b.first!) return a.first > b.first;
+        if (a.first != b.first) return a.first > b.first;
         return a.second > b.second;
     });
 
@@ -137,7 +138,7 @@ float Game::showdown(float probability) {
     for (int i = 0; i < NUM_PLAYERS; ++i) {
         Player &p = players[i];
         if (p.folded) continue;
-        int score = evaluate_7cards(i);
+        int score = evaluate_cards(i);
         if (i == main_character) main_player_score = score;
         if (score > best_score) {
             best_score = score;
@@ -150,6 +151,106 @@ float Game::showdown(float probability) {
     }
 
     return probability * (players[main_character].chips + (pot / number_of_winners) - INITIAL_CHIPS);
+}
+
+GameState Game::calc_gamestate(int player) {
+    Player &p = players[player];
+    if (community_cards.empty()) {
+        int rank1 = p.hole_cards[0].rank;
+        int rank2 = p.hole_cards[1].rank;
+        if (rank1 < rank2) std::swap(rank1, rank2);
+        bool suited = p.hole_cards[0].suit == p.hole_cards[1].suit;
+        return GameState(rank1, rank2, suited, pre_raises);
+    }
+    int score = evaluate_cards(player);
+    int cards_that_beat_us = 0;
+
+    auto evaluate_suitless = [&](int a, int b) {
+        std::vector<int> cards = {a, b};
+        int rank_count[15] = {};
+        rank_count[a]++;
+        rank_count[b]++;
+        for (Card &c: community_cards) {
+            rank_count[c.rank]++;
+            cards.push_back(c.rank);
+        }
+        std::sort(cards.begin(), cards.end(), [](const int &a, const int &b){return a > b;});
+        std::vector<std::pair<int, int>> freq_val_pairs;
+        for (int rank = 2; rank <= 14; ++rank) {
+            if (rank_count[rank] > 0) {
+                freq_val_pairs.push_back({rank_count[rank], rank});
+            }
+        }
+        std::sort(freq_val_pairs.begin(), freq_val_pairs.end(), [](const auto & a, const auto & b){
+            if (a.first != b.first) return a.first > b.first;
+            return a.second > b.second;
+        });
+
+        if (freq_val_pairs[0].first == 4) return 7000000 + freq_val_pairs[0].second;
+        if (freq_val_pairs[0].first == 3 && freq_val_pairs[1].first == 2) {
+            return 6000000 + freq_val_pairs[0].second * 10 + freq_val_pairs[1].second;
+        }
+
+        // check straight
+        int straight_count = -1;
+        int last_rank = -1;
+        for (int &c: cards) {
+            if (c == last_rank) continue;
+            if (last_rank - 1 == c) {
+                if(++straight_count == 5) return 5000000 + c + 4;
+                last_rank--;
+            }
+            else {
+                straight_count = 1;
+                last_rank = c;
+            }
+        }
+
+        if (freq_val_pairs[0].first == 3) {
+            return 3000000 + freq_val_pairs[0].second * 100 + freq_val_pairs[1].second * 10 + freq_val_pairs[2].second;
+        }
+        if (freq_val_pairs[0].first == 2 && freq_val_pairs[1].first == 2) {
+            return 2000000 + freq_val_pairs[0].second * 100 + freq_val_pairs[1].second * 10 + freq_val_pairs[2].second;
+        }
+        if (freq_val_pairs[0].first == 2) {
+            return 1000000 + freq_val_pairs[0].second * 1000 + freq_val_pairs[1].second * 100 + freq_val_pairs[2].second * 10 + freq_val_pairs[3].second;
+        }
+        return freq_val_pairs[0].second * 10000 + freq_val_pairs[1].second * 1000 + freq_val_pairs[2].second * 100 + freq_val_pairs[3].second * 10 + freq_val_pairs[4].second;
+
+    };
+    for (int high = 2; high <= 14; ++high) {
+        for (int low = 2; low <= high; ++low) {
+            if (evaluate_suitless(high, low) > score) cards_that_beat_us++;
+        }
+    }
+    int flushes_beat_us = 0;
+    int straight_draws = 0;
+    bool flush_draw = false;
+
+    bool flush_possible = false;
+    int suit_count[4] = {};
+    for (Card &c: community_cards) {
+        if(++suit_count[c.suit] >= 3) flush_possible = true;
+    }
+    std::vector<Card> suited;
+    if (flush_possible) {
+        if (score < 5000000) {
+            flushes_beat_us = 10;
+            if (community_cards.size() < 5 && suited.size() == 4) flush_draw = true;
+        }
+        else if (score < 6000000){
+            int high_suit = score - 5000000;
+            int community_suits = 0;
+            for (Card &c: suited) {
+                if (c.rank > high_suit) community_suits++;
+            }
+            flushes_beat_us = 14 - high_suit - community_suits;
+        }
+    }
+    if (score < 4000000) {
+        // count straight draws
+    }
+    return GameState(cards_that_beat_us, flushes_beat_us, straight_draws, flush_draw, pre_raises, post_raises);
 }
 
 float Game::dfs(float probability, int last_aggressor, int player_turn) {
@@ -179,11 +280,12 @@ float Game::dfs(float probability, int last_aggressor, int player_turn) {
         player_turn = 0;
         last_aggressor = 0;
     }
+    if (last_aggressor == -1) last_aggressor = player_turn;
     Player &curr_player = players[player_turn];
     int nxt_player = (player_turn + 1) % NUM_PLAYERS;
     if (curr_player.folded) return dfs(probability, last_aggressor, player_turn + 1);
     
-    auto state = curr_player.calc_gamestate(); // work on this
+    auto state = calc_gamestate(player_turn); // work on this
 
     float total_ev = 0;
     for (int i = 0; i < NUM_ACTIONS; i++) {
@@ -209,7 +311,8 @@ float Game::dfs(float probability, int last_aggressor, int player_turn) {
             curr_player.bet_made -= to_call;
             curr_player.chips += to_call;
         }
-        else if (i == RAISE) {
+        else if (i == RAISE && pre_raises < 3 && post_raises < 2) {
+            community_cards.empty() ? pre_raises++ : post_raises++;
             int new_aggressor = player_turn;
             int bet = std::min(int((pot + to_call) * 0.5 + to_call), curr_player.chips);
             pot += bet;
@@ -224,6 +327,7 @@ float Game::dfs(float probability, int last_aggressor, int player_turn) {
             curr_player.bet_made -= bet;
             current_bet -= bet - to_call;
             curr_player.chips += bet;
+            community_cards.empty() ? pre_raises-- : post_raises--;
         }
     }
     
