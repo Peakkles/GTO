@@ -4,12 +4,13 @@
 #include <map>
 #include <vector>
 #include <string>
+#include <fstream>
 
 
-#define NUM_PLAYERS 4
+#define NUM_PLAYERS 3
 #define INITIAL_CHIPS 200
 
-enum Suit : char {
+enum Suit : int {
     HEART,
     SPADE,
     DIAMOND,
@@ -18,7 +19,7 @@ enum Suit : char {
 const std::string SUIT_NAME[] = { "H", "S", "D", "C" };
 
 struct Card {
-    char rank;
+    int rank;
     Suit suit;
 
     std::string to_string() {
@@ -74,13 +75,35 @@ struct Player {
     std::map<GameState, float[NUM_ACTIONS]> ev;
 
     Player() {}
-    Player(Card c1, Card c2) : chips(INITIAL_CHIPS), hole_cards{c1, c2} {}
+    Player(Card c1, Card c2) : chips(INITIAL_CHIPS), hole_cards{c1, c2}
+    , folded(false), bet_made(0) {}
 
     std::string to_string() {
         return (
             "<Chips: " + std::to_string(chips) + " | Hole cards: " +
             hole_cards[0].to_string() + hole_cards[1].to_string() + ">"
         );
+    }
+
+    void save_strategy_to_file(const std::string &filename) {
+        std::ofstream file(filename);
+        if (!file.is_open()) {
+            std::cerr << "Failed to open file for writing: " << filename << std::endl;
+            return;
+        }
+        for (const auto &[g, probabilities]: strategy) {
+            file << g.rank_combos_that_beat_you << " " 
+                 << g.flush_highs_that_beat_you << " "
+                 << g.straight_draws << " "
+                 << g.flush_draw << " "
+                 << g.preflop_raises << " "
+                 << g.post_raises << " |";
+            for (auto &p: probabilities) file << p << " ";
+            file << "|";
+            for (auto &p: ev[g]) file << p << " ";
+            file << '\n';
+        }
+        file.close();
     }
 
 };
@@ -108,6 +131,7 @@ public:
     GameState calc_gamestate(int player);
     int evaluate_cards(int player);
     float showdown(float probability);
+    void default_strategy(Player &p, const GameState &g);
 
     float dfs(float p, int last_aggressor, int player_turn);
 };

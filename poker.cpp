@@ -11,17 +11,21 @@ Game::Game() {
 
     int idx = 0;
     for (int j = Suit::HEART; j <= Suit::CLUB; j++) {
-        for (char i = 2; i <= 14; i++) {
+        for (int i = 2; i <= 14; i++) {
             deck[idx++] = {i, static_cast<Suit>(j)};
         }
     }
 
     unsigned seed = 73;
-    std::shuffle(&deck[0], &deck[52], std::default_random_engine(seed));
+    std::shuffle(deck, deck+52, std::default_random_engine(seed));
 
     for (int i = 0; i < NUM_PLAYERS; i++) {
         players[i] = Player(draw(), draw());
     }
+
+    main_character = 0;
+    pre_raises = 0;
+    post_raises = 0;
 }
 
 Card Game::draw() {
@@ -31,10 +35,13 @@ Card Game::draw() {
 
 void Game::run_game() {
     // Pre flop first take blinds
-
     players[0].chips -= small_blind;
+    players[0].bet_made += small_blind;
     players[1].chips -= small_blind * 2;
+    players[1].bet_made += small_blind * 2;
+    pot += small_blind * 3;
     dfs(1.0f, -1, 2);
+    players[0].save_strategy_to_file("p0_strat");
 
 }
 
@@ -232,16 +239,20 @@ GameState Game::calc_gamestate(int player) {
     for (Card &c: community_cards) {
         if(++suit_count[c.suit] >= 3) flush_possible = true;
     }
-    std::vector<Card> suited;
+    int suit = -1;
+    if (++suit_count[p.hole_cards[0].suit] >= 4) suit = p.hole_cards[0].suit;
+    if (++suit_count[p.hole_cards[1].suit] >= 4) suit = p.hole_cards[1].suit;
+
     if (flush_possible) {
         if (score < 5000000) {
             flushes_beat_us = 10;
-            if (community_cards.size() < 5 && suited.size() == 4) flush_draw = true;
+            if (community_cards.size() < 5 && suit != -1) flush_draw = true;
         }
         else if (score < 6000000){
             int high_suit = score - 5000000;
             int community_suits = 0;
-            for (Card &c: suited) {
+            for (Card &c: community_cards) {
+                if (c.suit != suit) continue;
                 if (c.rank > high_suit) community_suits++;
             }
             flushes_beat_us = 14 - high_suit - community_suits;
@@ -249,53 +260,111 @@ GameState Game::calc_gamestate(int player) {
     }
     if (score < 4000000) {
         // count straight draws
+        int ranks[15];
+        ranks[p.hole_cards[0].rank] = 1;
+        ranks[p.hole_cards[1].rank] = 1;
+        for (Card &c: community_cards) ranks[c.rank] = 1;
+        if (ranks[14]) ranks[1] = 1;
+        int l = 1; 
+        int r = 1;
+        int gap = -1;
+        while (r <= 14) {
+            if (ranks[r] == 0) {
+                if (gap != -1) l = r;
+                gap = r;
+                r++;
+            }
+            if (r - l == 4) {
+                straight_draws++;
+                l = gap + 1;
+            }
+            if (ranks[r]) r++;
+        }
     }
     return GameState(cards_that_beat_us, flushes_beat_us, straight_draws, flush_draw, pre_raises, post_raises);
 }
 
-float Game::dfs(float probability, int last_aggressor, int player_turn) {
-    if (all_folded()) {
-        float ev;
-        if (players[main_character].folded) {
-            ev = probability * (players[main_character].chips - INITIAL_CHIPS);
-        }
-        else ev = probability * (players[main_character].chips + pot - INITIAL_CHIPS);
-        return ev;    
+void Game::default_strategy(Player &p, const GameState &g) {
+    if (pre_raises < 3 && post_raises < 2) {
+        p.strategy[g][0] = 0.333333;
+        p.strategy[g][1] = 0.333333;
+        p.strategy[g][2] = 0.333333;
     }
+    else {
+        p.strategy[g][0] = 0.5f;
+        p.strategy[g][1] = 0.5f;
+        p.strategy[g][2] = 0.0f;
+    }
+}
+
+float Game::dfs(float probability, int last_aggressor, int player_turn) {
+    player_turn %= NUM_PLAYERS;
+
+    // --- Terminal condition: all others folded ---
+    if (all_folded()) {
+        float ev = probability * (
+            players[main_character].folded
+            ? (players[main_character].chips - INITIAL_CHIPS)
+            : (players[main_character].chips + pot - INITIAL_CHIPS)
+        );
+        return ev;
+    }
+
     int undo_community_cards = 0;
+
+    // --- Betting round complete: advance street or showdown ---
     if (last_aggressor == player_turn) {
         if (community_cards.empty()) {
-            community_cards.push_back(draw());
-            community_cards.push_back(draw());
-            community_cards.push_back(draw());
+            // Flop
+            for (int i = 0; i < 3; ++i)
+                community_cards.push_back(draw());
             undo_community_cards = 3;
         }
         else if (community_cards.size() < 5) {
+            // Turn or River
             community_cards.push_back(draw());
             undo_community_cards = 1;
         }
         else {
+            // River complete -> showdown
             return showdown(probability);
         }
+
+        // Find first active player for next betting round
         player_turn = 0;
-        last_aggressor = 0;
+        while (players[player_turn].folded)
+            player_turn = (player_turn + 1) % NUM_PLAYERS;
+        last_aggressor = player_turn;
     }
-    if (last_aggressor == -1) last_aggressor = player_turn;
+
+    // --- If no aggressor yet, set it now ---
+    if (last_aggressor == -1)
+        last_aggressor = player_turn;
+
     Player &curr_player = players[player_turn];
     int nxt_player = (player_turn + 1) % NUM_PLAYERS;
-    if (curr_player.folded) return dfs(probability, last_aggressor, player_turn + 1);
-    
-    auto state = calc_gamestate(player_turn); // work on this
 
-    float total_ev = 0;
+    // --- Skip folded players ---
+    if (curr_player.folded)
+        return dfs(probability, last_aggressor, nxt_player);
+
+    // --- Ensure strategy exists ---
+    auto state = calc_gamestate(player_turn);
+    if (curr_player.strategy.find(state) == curr_player.strategy.end())
+        default_strategy(curr_player, state);
+
+    float total_ev = 0.0f;
+    int to_call = current_bet - curr_player.bet_made;
+
+    // --- Loop over actions ---
     for (int i = 0; i < NUM_ACTIONS; i++) {
-        int to_call = current_bet - curr_player.bet_made;
-        if (i == FOLD && to_call) {
-            // if main character, don't dfs, calculate ev right here
+        float new_prob = curr_player.strategy[state][i] * probability;
+
+        if (i == FOLD && to_call > 0) {
             curr_player.folded = true;
-            float new_prob = curr_player.strategy[state][i] * probability;
             float ev = dfs(new_prob, last_aggressor, nxt_player);
-            if (main_character == player_turn) curr_player.ev[state][i] += ev;
+            if (main_character == player_turn)
+                curr_player.ev[state][i] += ev;
             total_ev += ev;
             curr_player.folded = false;
         }
@@ -303,35 +372,45 @@ float Game::dfs(float probability, int last_aggressor, int player_turn) {
             pot += to_call;
             curr_player.bet_made += to_call;
             curr_player.chips -= to_call;
-            float new_prob = curr_player.strategy[state][i] * probability;
+
             float ev = dfs(new_prob, last_aggressor, nxt_player);
-            if (main_character == player_turn) curr_player.ev[state][i] += ev;
+            if (main_character == player_turn)
+                curr_player.ev[state][i] += ev;
             total_ev += ev;
+
             pot -= to_call;
             curr_player.bet_made -= to_call;
             curr_player.chips += to_call;
         }
         else if (i == RAISE && pre_raises < 3 && post_raises < 2) {
-            community_cards.empty() ? pre_raises++ : post_raises++;
+            bool preflop = community_cards.empty();
+            if (preflop) pre_raises++;
+            else post_raises++;
+
             int new_aggressor = player_turn;
             int bet = std::min(int((pot + to_call) * 0.5 + to_call), curr_player.chips);
+
             pot += bet;
             curr_player.bet_made += bet;
             current_bet += bet - to_call;
             curr_player.chips -= bet;
-            float new_prob = curr_player.strategy[state][i] * probability;
+
             float ev = dfs(new_prob, new_aggressor, nxt_player);
-            if (main_character == player_turn) curr_player.ev[state][i] += ev;
+            if (main_character == player_turn)
+                curr_player.ev[state][i] += ev;
             total_ev += ev;
+
             pot -= bet;
             curr_player.bet_made -= bet;
             current_bet -= bet - to_call;
             curr_player.chips += bet;
-            community_cards.empty() ? pre_raises-- : post_raises--;
+
+            if (preflop) pre_raises--;
+            else post_raises--;
         }
     }
-    
 
+    // --- Undo dealt community cards ---
     while (undo_community_cards--) {
         community_cards.pop_back();
         top_card_index++;
@@ -344,4 +423,5 @@ float Game::dfs(float probability, int last_aggressor, int player_turn) {
 
 int main() {
     Game game;
+    game.run_game();
 }
