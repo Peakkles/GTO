@@ -132,6 +132,8 @@ public:
     int evaluate_cards(int player);
     float showdown(float probability);
     void default_strategy(Player &p, const GameState &g);
+    void update_strategy();
+    void reset_and_deal();
 
     float dfs(float p, int last_aggressor, int player_turn);
 };

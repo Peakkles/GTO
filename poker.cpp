@@ -5,10 +5,16 @@
 
 #include "poker.hpp"
 
+std::random_device rd;
+std::default_random_engine rng(rd());
+
 Game::Game() {
     top_card_index = 51;
     small_blind = 1;
-
+    main_character = 0;
+    pot = 0;
+    pre_raises = 0;
+    post_raises = 0;
     int idx = 0;
     for (int j = Suit::HEART; j <= Suit::CLUB; j++) {
         for (int i = 2; i <= 14; i++) {
@@ -16,21 +22,23 @@ Game::Game() {
         }
     }
 
-    unsigned seed = 73;
-    std::shuffle(deck, deck+52, std::default_random_engine(seed));
-
-    for (int i = 0; i < NUM_PLAYERS; i++) {
+    for (int i = 0; i < NUM_PLAYERS; ++i) {
         players[i] = Player(draw(), draw());
     }
-
-    main_character = 0;
-    pre_raises = 0;
-    post_raises = 0;
 }
 
 Card Game::draw() {
     assert(top_card_index >= 0);
     return deck[top_card_index--];
+}
+
+void Game::reset_and_deal() {
+    top_card_index = 51;
+    std::shuffle(deck, deck+52, rng);
+    for (int i = 0; i < NUM_PLAYERS; i++) {
+        players[i].hole_cards[0] = draw();
+        players[i].hole_cards[1] = draw();
+    }
 }
 
 void Game::run_game() {
@@ -40,8 +48,18 @@ void Game::run_game() {
     players[1].chips -= small_blind * 2;
     players[1].bet_made += small_blind * 2;
     pot += small_blind * 3;
-    dfs(1.0f, -1, 2);
-    players[0].save_strategy_to_file("p0_strat");
+    current_bet = small_blind * 2;
+    
+    for (int num_updates = 1; num_updates <= 10; ++num_updates) {
+        for (int games_per_update = 1; games_per_update <= 10; ++games_per_update) {
+            dfs(1.0f, -1, 2);
+            reset_and_deal();
+        }
+        update_strategy();
+        if (main_character == 0) players[0].save_strategy_to_file("p0_strat");
+        main_character = (main_character + 1) % NUM_PLAYERS;
+    }
+    
 
 }
 
@@ -156,7 +174,6 @@ float Game::showdown(float probability) {
             return probability * (players[main_character].chips - INITIAL_CHIPS);
         }
     }
-
     return probability * (players[main_character].chips + (pot / number_of_winners) - INITIAL_CHIPS);
 }
 
@@ -295,11 +312,40 @@ void Game::default_strategy(Player &p, const GameState &g) {
         p.strategy[g][1] = 0.5f;
         p.strategy[g][2] = 0.0f;
     }
+    p.ev[g][0] = 0.0f;
+    p.ev[g][1] = 0.0f;
+    p.ev[g][2] = 0.0f;
+}
+
+void Game::update_strategy() {
+    Player &p = players[main_character];
+
+    for (auto &[g, evs]: p.ev) {
+        double avg_ev = 0;
+        int n = g.preflop_raises >= 3 || g.post_raises >= 2 ? 2 : 3; // hmmmm
+        for (int i = 0; i < n; ++i) {
+            avg_ev += p.strategy[g][i] * evs[i];
+        }
+        double sum_pos_regret = 0;
+        for (int i = 0; i < n; ++i) {
+            auto &e_value = evs[i];
+            if (e_value - avg_ev > 0) sum_pos_regret += e_value - avg_ev;
+        }
+        if (sum_pos_regret == 0) {
+            default_strategy(p, g);
+        }
+        else {
+            for (int i = 0; i < n; ++i) {
+                float e_value = evs[i];
+                if (e_value - avg_ev <= 0) p.strategy[g][i] = 0.0f;
+                else p.strategy[g][i] = (e_value - avg_ev) / sum_pos_regret;
+            }
+        }
+        for (auto &e: evs) e = 0.0f;
+    }
 }
 
 float Game::dfs(float probability, int last_aggressor, int player_turn) {
-    player_turn %= NUM_PLAYERS;
-
     // --- Terminal condition: all others folded ---
     if (all_folded()) {
         float ev = probability * (
@@ -309,24 +355,19 @@ float Game::dfs(float probability, int last_aggressor, int player_turn) {
         );
         return ev;
     }
-
     int undo_community_cards = 0;
 
-    // --- Betting round complete: advance street or showdown ---
     if (last_aggressor == player_turn) {
         if (community_cards.empty()) {
-            // Flop
             for (int i = 0; i < 3; ++i)
                 community_cards.push_back(draw());
             undo_community_cards = 3;
         }
         else if (community_cards.size() < 5) {
-            // Turn or River
             community_cards.push_back(draw());
             undo_community_cards = 1;
         }
         else {
-            // River complete -> showdown
             return showdown(probability);
         }
 
