@@ -7,7 +7,7 @@
 #include <fstream>
 
 
-#define NUM_PLAYERS 3
+#define NUM_PLAYERS 2
 #define INITIAL_CHIPS 200
 
 enum Suit : int {
@@ -29,10 +29,10 @@ struct Card {
 
 struct GameState {
     int rank_combos_that_beat_you; // 0 to (14 choose 2 - 1)
-    int flush_highs_that_beat_you; // 0 to 10
+    int flush_possible;
     int straight_draws; // 0,1,or 2 -> same as 0,4,or 8 outs
     bool flush_draw;
-    int preflop_raises; // 0-3
+    int preflop_raises; // 0-2
     int post_raises; // 0-2
 
     /* if preflop, rank_combos is used for high card 2-14
@@ -41,16 +41,16 @@ struct GameState {
        flush_draw = hole_cards are suited */ 
 
     GameState(int r_combos, int flushes, int s_draws, bool f_draw, int pre_r, int post_r) 
-    : rank_combos_that_beat_you(r_combos), flush_highs_that_beat_you(flushes)
+    : rank_combos_that_beat_you(r_combos), flush_possible(flushes)
     , straight_draws(s_draws), flush_draw(f_draw), preflop_raises(pre_r), post_raises(post_r) {}
 
     GameState(int high_card, int low_card, bool suited, int pre_r) 
-    : rank_combos_that_beat_you(high_card), flush_highs_that_beat_you(low_card)
+    : rank_combos_that_beat_you(high_card), flush_possible(low_card)
     , straight_draws(-1), flush_draw(suited) , preflop_raises(pre_r), post_raises(0) {}
 
     bool operator< (const GameState &other) const {
         if (rank_combos_that_beat_you != other.rank_combos_that_beat_you) return rank_combos_that_beat_you < other.rank_combos_that_beat_you;
-        if (flush_highs_that_beat_you != other.flush_highs_that_beat_you) return flush_highs_that_beat_you < other.flush_highs_that_beat_you;
+        if (flush_possible != other.flush_possible) return flush_possible < other.flush_possible;
         if (straight_draws != other.straight_draws) return straight_draws < other.straight_draws;
         if (flush_draw != other.flush_draw) return flush_draw < other.flush_draw;
         if (preflop_raises != other.preflop_raises) return preflop_raises < other.preflop_raises;
@@ -73,7 +73,6 @@ struct Player {
     int bet_made;
     std::map<GameState, float[NUM_ACTIONS]> strategy;
     std::map<GameState, float[NUM_ACTIONS]> ev;
-
     Player() {}
     Player(Card c1, Card c2) : chips(INITIAL_CHIPS), hole_cards{c1, c2}
     , folded(false), bet_made(0) {}
@@ -93,7 +92,7 @@ struct Player {
         }
         for (const auto &[g, probabilities]: strategy) {
             file << g.rank_combos_that_beat_you << " " 
-                 << g.flush_highs_that_beat_you << " "
+                 << g.flush_possible << " "
                  << g.straight_draws << " "
                  << g.flush_draw << " "
                  << g.preflop_raises << " "
@@ -130,12 +129,12 @@ public:
     void run_game();
     GameState calc_gamestate(int player);
     int evaluate_cards(int player);
-    float showdown(float probability);
+    float showdown();
     void default_strategy(Player &p, const GameState &g);
     void update_strategy();
     void reset_and_deal();
 
-    float dfs(float p, int last_aggressor, int player_turn);
+    float dfs(int last_aggressor, int player_turn);
 };
 
 #endif
